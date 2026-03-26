@@ -1,0 +1,878 @@
+---
+title: "Incorporating lipoprotein(a) into cardiovascular risk prediction equations"
+subtitle: "Product: Olpasiran; Protocol Number: 20250105"
+author: "[Byron C. Jaeger, PhD](https://www.byronjaeger.com/)"
+date: "Document created on `r format(Sys.time(), '%B %d, %Y')`" 
+bibliography: refs.bib
+csl: refs.csl
+always_allow_html: true
+output: 
+  officedown::rdocx_document:
+    reference_docx: style_arial.docx
+    keep_md: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup-knitr, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = FALSE,    # don't show code blocks
+  message = FALSE, # don't print messages to the doc
+  warning = FALSE, # don't print warnings to the doc
+  dpi = 300,       # higher dpi => higher render time 
+  fig.width = 6,   # default figure width in inches
+  fig.height = 4   # default figure height in inches
+)
+
+# Hello! This is the template word document for Perisphere reports.
+# There are several code chunks used to set up the format of the
+# document below. You don't have to modify those unless you want 
+# to change the format of your output. 
+
+```
+
+```{r setup-pkgs}
+
+# packages are usually handled by packages.R (in main directory).
+# When tar_make() is run, it loads everything in packages.R.
+# Assuming this document is in the list of targets (see ?tar_render),
+# you won't need to include the library calls below.
+# however, the template includes packages in its initial form
+# so that you can knit the document without having to run tar_make().
+# The library calls can safely be removed once the required packages
+# are in packages.R and this doc is part of the targets pipeline.
+
+# standards for word docs
+library(officer)
+library(flextable)
+
+# specify a rounding specification 
+library(table.glue)
+
+# general purpose
+library(tidyverse)
+
+# table 1
+library(gtsummary)
+
+```
+
+```{r setup-rounding}
+
+
+rspec_4d <- round_spec() %>% 
+  round_using_decimal(digits = 4)
+
+rspec_3d <- round_spec() %>% 
+  round_using_decimal(digits = 3)
+
+rspec_2d <- round_spec() %>% 
+  round_using_decimal(digits = 2)
+
+```
+
+
+```{r setup-figures}
+
+set_fig_landscape <- function() {
+  knitr::opts_chunk$set(fig.width = 11, fig.height = 6)
+}
+
+set_fig_portrait <- function() {
+  knitr::opts_chunk$set(fig.width = 6, fig.height = 4)
+}
+
+theme_set(
+  new = theme_bw() + 
+    theme(panel.grid = element_blank(),
+          text = element_text(size = 12))
+)
+
+```
+
+```{r setup-margins}
+
+# Set a default footer because when we use block_section, it 
+# starts a new style template for headers and footers. Thus,
+# if we want page numbers to appear on every page, we need to
+# put that into the default footer and then put that default
+# footer into every block section. MS word...¯\_(ツ)_/¯
+# note to future self - go here if you want to remember this: 
+# https://github.com/davidgohel/officedown/discussions/103
+
+footer_default <- block_list(
+  fpar(
+    run_word_field(field = "PAGE"),
+    fp_p = fp_par(text.align = "left") 
+  )
+)
+
+# Code in this chunk sets the margins for your document. 
+# The helper functions page_long_above() and page_wide_above()
+# also provide shortcuts for switching between wide (landscape)
+# and normal (long) MS word layouts. 
+
+# helper function for defining margins
+make_margin <- function(x=NULL){
+  
+  if(is.null(x)){ return(page_mar()) } 
+  
+  if(is.character(x)){
+    
+    out <- switch(
+      tolower(x),
+      "normal" = page_mar(1, 1, 1, 1),
+      "narrow" = page_mar(1/2, 1/2, 1/2, 1/2),
+      "moderate" = page_mar(1, 1, 3/4, 3/4)
+    )
+    
+  }
+  
+}
+
+# set content above to be portrait
+page_long_above <- function(margins = make_margin('narrow')){
+  
+  # b/c block_sections apply to content ABOVE, we set
+  # the content BELOW to be landscape when we use page_long_above  
+  set_fig_landscape()
+  
+  block_section(
+    prop_section(
+      page_size = page_size(orient = "portrait"),
+      type = "continuous",
+      page_margins = margins,
+      footer_default = footer_default
+    )
+  )
+  
+}
+
+# set content above to be landscape
+page_wide_above <- function(margins = make_margin('narrow')){
+  
+  # b/c block_sections apply to content ABOVE, we set
+  # the content BELOW to be portrait when we use page_wide_above
+  set_fig_portrait()
+  
+  block_section(
+    prop_section(
+      page_size = page_size(orient = "landscape"),
+      type = "continuous",
+      page_margins = margins,
+      footer_default = footer_default
+    )
+  )
+  
+}
+
+```
+
+```{r setup-targets}
+
+# # uncomment when there are targets to load
+withr::with_dir(
+  new = here::here(),
+  code = {
+    targets::tar_load(names = c(data_excluded_10yr_risk,
+                                data_excluded_30yr_risk,
+                                data_train, 
+                                data_test,
+                                fig_lpa_spline,
+                                meta,
+                                analyses,
+                                evaluations))
+    
+    exclusions_30yr <- read_csv("data/exclusions_30yr.csv")
+    exclusions_10yr <- read_csv("data/exclusions_10yr.csv")
+    
+  }
+)
+
+```
+
+
+```{r setup-meta}
+
+set_default_dictionary(meta)
+
+```
+
+
+```{r setup-formatters}
+
+# make a short name for table.glue::table_value - this makes
+# the inline reporting of results less complicated to read.
+tv <- table.glue::table_value
+tg <- table.glue::table_glue
+
+r_version <- tg("{version$major}.{version$minor}")
+
+```
+
+```{r setup-tables}
+
+# Footnotes should be wrapped in `as_paragraph`:
+
+ckd_defn <- as_paragraph("Chronic Kidney Disease was defined by an estimated glomerular filtration rate <60 ml/min/1.73 m", as_sup(2L), " based on the 2021 CKD-EPI creatinine equation.")
+
+# abbreviation management
+
+abbrvs <- list(
+  "SD"   = 'standard deviation',
+  "ACR" =	"Albumin-to-creatinine ratio",
+  "ASCVD" =	"Atherosclerotic cardiovascular disease",
+  "CI" =	"Confidence interval",
+  "eGFR" =	"Estimated glomerular filtration rate",
+  "HbA1c" =	"Glycated hemoglobin",
+  "HDL" =	"High-density lipoprotein",
+  "LDL" =	"Low-density lipoprotein",
+  "SBP" = "Systolic blood pressure",
+  "DBP" = "Diastolic blood pressure"
+)
+
+
+
+abbrvs_paste <- function(strings){
+  
+  front <- 'Abbreviations'
+  
+  matter <- glue::glue_collapse(strings, sep = '; ', last = '; and ')
+  
+  paste(front, matter, sep = ': ')
+  
+}
+
+abbrvs_write <- function(abbr){
+  
+  sorted <- abbr[sort(names(abbr))]
+  
+  strings <- map2_chr(names(sorted), sorted, paste, sep = ' = ')
+  
+  as_paragraph(abbrvs_paste(strings))
+  
+}
+
+
+```
+
+```{r setup-footers}
+
+footer_nri <- as_paragraph(
+  paste(
+    "NRI⁺ reflects how often participants who experienced an event were",
+    "correctly reclassified to a higher predicted risk (minus those moved",
+    "lower) by the new model. NRI⁻ reflects how often participants without",
+    "events were correctly reclassified to a lower predicted risk (minus those",
+    "moved higher). The overall NRI is the sum of NRI⁺ and NRI⁻, summarizing",
+    "total improvement in risk classification compared with the reference model."
+  )
+)
+
+```
+
+
+
+```{r create-tbl_characteristics}
+
+tbl_characteristics <- data_train %>% 
+  bind_rows(data_test) %>% 
+  mutate(risk_horizon = paste("year", risk_horizon, sep = '_')) %>% 
+  split(.$risk_horizon) %>% 
+  map(translate_data, units = 'descriptive') %>% 
+  map(.f =  ~ {
+    tbl_summary(.x, 
+                by = 'study', 
+                include = c("age",
+                            "sex",
+                            "race",
+                            "smoke_current",
+                            "bmi",
+                            "sbp",
+                            "med_htn",
+                            "diabetes",
+                            "chol_total",
+                            "chol_hdl",
+                            "med_statin",
+                            "egfr_lt60",
+                            "lpa_nmol",
+                            "lpa_mgdl")) %>% 
+      as_flex_table() %>% 
+      flextable_polish() %>% 
+      flextable_autofit()
+  })
+
+```
+
+```{r create-tbl_lpa_lm}
+
+tbl_lpa_lm <- analyses %>% 
+  select(.risk_horizon, .lpa_defn, .lpa_trafo, starts_with("fit_lm")) %>% 
+  # remove duplicates
+  group_by(.risk_horizon, .lpa_defn, .lpa_trafo) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  mutate(
+    tbl = pmap(
+      .l = list(.lpa_defn, .lpa_trafo, fit_lm, fit_lm_tidy),
+      .f = function(.lpa_defn, .lpa_trafo, fit_lm, fit_lm_tidy){
+        
+        r_squared <- table_value(summary(fit_lm)$r.squared * 100)
+        
+        if(.lpa_trafo == 'log_trafo'){
+          lpa_var <- paste(.lpa_defn, "log", sep = '_')
+        } else {
+          lpa_var <- .lpa_defn
+        }
+        
+        lpa_lab_bare <- meta$get_label(lpa_var)
+        lpa_lab_unit <- meta$get_label(lpa_var, units = 'descriptive')
+        
+        fit_lm_tidy %>% 
+          filter(name != '(Intercept)',
+                 level != "no" | is.na(level)) %>% 
+          select(-level, -term, -std.error, -statistic) %>% 
+          mutate(name = translate_names(name, units = 'model'),
+                 label = if_else(is.na(label) | label == 'yes', name, label),
+                 name = if_else(name == label, NA_character_, name),
+                 tbv_pval = table_pvalue(p.value),
+                 tbv_est = table_glue("{estimate}\n({conf.low}, {conf.high})",
+                                      rspec = rspec_2d),
+                 tbv_est = if_else(reference, true = "0 (ref)", false = tbv_est),
+                 .keep = 'unused') %>% 
+          relocate(tbv_pval, .after = tbv_est) %>% 
+          as_grouped_data(groups = 'name') %>% 
+          drop_empty_rows() %>%  
+          as_flextable(hide_grouplabel = TRUE) %>% 
+          flextable_polish() %>% 
+          flextable_autofit() %>% 
+          padding(i = ~ label %in% c("Men", "Women"), 
+                  j = 1,
+                  padding.left = 15,
+                  part = 'body') %>% 
+          set_header_labels(
+            label = "Variable",
+            tbv_est = paste("Expected change (95% CI) in", lpa_lab_unit),
+            tbv_pval = "P-value"
+          ) %>% 
+          add_footer_lines(
+            values = as_paragraph(
+              glue("Percentage of variance explained in \\
+                   {lpa_lab_bare} by this model: {r_squared}")
+            )
+          )
+        
+      })
+  ) %>% 
+  transmute(
+    name = paste(.lpa_defn, .lpa_trafo, .risk_horizon, sep = '_'),
+    tbl
+  ) %>% 
+  deframe()
+
+
+```
+
+```{r create-tbl_lpa_cph}
+
+tbl_lpa_cph <- analyses %>% 
+  filter(.lpa_trafo == 'no_trafo') %>% 
+  select(-predictions, -starts_with('fit_lm')) %>% 
+  mutate(
+    data_tbl = pmap(
+      .l = list(.risk_type, .lpa_defn, .lpa_trafo, fit_cox_tidy),
+      .f = function(.risk_type, .lpa_defn, .lpa_trafo, fit_cox_tidy){ 
+        
+        fit_cox_tidy %>% 
+          filter(level != "no" | is.na(level)) %>% 
+          select(-level, -term, -std.error, -statistic) %>% 
+          mutate(name = translate_names(name, units = 'model'),
+                 label = if_else(is.na(label) | label == 'yes', name, label),
+                 name = if_else(name == label, NA_character_, name),
+                 tbv_pval = table_pvalue(p.value),
+                 tbv_est = table_glue("{estimate}\n({conf.low}, {conf.high})",
+                                      rspec = rspec_2d),
+                 tbv_est = if_else(reference, true = "1 (ref)", false = tbv_est),
+                 .keep = 'unused') %>% 
+          relocate(tbv_pval, .after = tbv_est) 
+        
+      } 
+      
+    )
+  ) %>% 
+  select(.risk_horizon, .risk_type, data_tbl) %>% 
+  unnest(data_tbl) %>% 
+  pivot_wider(names_from = .risk_type, 
+              values_from = c(tbv_est, tbv_pval),
+              names_vary = 'slowest') %>% 
+  mutate(.risk_horizon = paste("year", .risk_horizon, sep = '_')) %>% 
+  split(.$.risk_horizon) %>% 
+  map(
+    ~ .x %>% 
+      select(-.risk_horizon) %>% 
+      as_grouped_data(groups = 'name') %>% 
+      drop_empty_rows() %>%  
+      as_flextable(hide_grouplabel = TRUE) %>% 
+      flextable_polish() %>% 
+      flextable_autofit() %>% 
+      padding(i = ~ label %in% c("Men", "Women"), 
+              j = 1,
+              padding.left = 15,
+              part = 'body') %>% 
+      set_header_labels(
+        label = "Variable",
+        tbv_est_ascvd = "Hazard ratio\n(95% CI)",
+        tbv_pval_ascvd = "P-value",
+        tbv_est_cvd = "Hazard ratio\n(95% CI)",
+        tbv_pval_cvd = "P-value"
+      ) %>% 
+      add_header_row(values = c("Variable",
+                                "ASCVD",
+                                "CVD"),
+                     colwidths = c(1, 2, 2)) %>% 
+      merge_v(part = 'header')
+  ) 
+
+
+
+```
+
+
+```{r create-tbl_cstats}
+
+tbl_cstats <- evaluations %>% 
+  mutate(.risk_horizon = paste("year", .risk_horizon, sep = '_')) %>% 
+  split(.$.risk_horizon) %>% 
+  map(
+    ~ select(.x, -predictions) %>% 
+      unnest(evaluation) %>% 
+      filter(str_detect(stat, '^auc'),
+             .lpa_defn == 'lpa_nmol',
+             .lpa_trafo == 'no_trafo') %>% 
+      mutate(tbv = table_glue("{est}\n({lwr}, {upr})", 
+                              rspec = rspec_4d), 
+             .keep = 'unused') %>% 
+      select(group_level, .risk_type, model, stat, tbv) %>% 
+      pivot_wider(names_from = model, values_from = tbv) %>% 
+      mutate(group_level = translate_categories(group_level),
+             .risk_type = str_to_upper(.risk_type),
+             stat = recode(stat, 
+                           "auc" = "C-statistic (95% CI)",
+                           "auc_vs_prevent" = "Difference\n(95% CI)"),
+             prevent = if_else(is.na(prevent), "0 (reference)", prevent)) %>% 
+      relocate(.risk_type, .after = enhance) %>% 
+      as_grouped_data(groups = '.risk_type') %>% 
+      as_flextable(hide_grouplabel = TRUE) %>% 
+      flextable_polish() %>% 
+      flextable_autofit() %>% 
+      set_header_labels(group_level = "Group",
+                        stat = "Statistic",
+                        prevent = "Base",
+                        patch = "Patched with Lp(a)",
+                        enhance = "Enhanced with Lp(a)") %>% 
+      add_header_row(values = c("Group", "Statistic", "PREVENT Equations"),
+                     colwidths = c(1, 1, 3)) %>% 
+      merge_v(part = 'header') %>% 
+      merge_v(part = 'body', j = 'group_level')
+  )
+
+```
+
+
+```{r create-tbl_nri}
+
+tbl_nri <- evaluations %>% 
+  mutate(.risk_horizon = paste("year", .risk_horizon, sep = '_')) %>% 
+  split(.$.risk_horizon) %>% 
+  map(
+    ~ select(.x, -predictions) %>% 
+      unnest(evaluation) %>% 
+      filter(str_detect(stat, '^nri'),
+             .lpa_defn == 'lpa_nmol',
+             .lpa_trafo == 'no_trafo') %>% 
+      mutate(tbv = table_glue("{est}\n({lwr}, {upr})", 
+                              rspec = rspec_3d), 
+             .keep = 'unused') %>% 
+      select(group_level, .risk_type, model, stat, tbv) %>% 
+      pivot_wider(names_from = model, values_from = tbv) %>% 
+      mutate(group_level = translate_categories(group_level),
+             .risk_type = str_to_upper(.risk_type),
+             stat = recode(stat, 
+                           "nri_overall" = "NRI",
+                           "nri_plus" = "NRI+",
+                           "nri_minus" = "NRI-")) %>% 
+      as_grouped_data(groups = '.risk_type') %>% 
+      as_flextable(hide_grouplabel = TRUE) %>% 
+      flextable_polish() %>% 
+      flextable_autofit() %>% 
+      set_header_labels(group_level = "Group",
+                        stat = "Statistic",
+                        prevent = "Base",
+                        patch = "Patched with Lp(a)",
+                        enhance = "Enhanced with Lp(a)") %>% 
+      merge_v(part = 'header') %>% 
+      merge_v(part = 'body', j = 'group_level') %>% 
+      footnote(j = 'stat', i = 1, 
+               part = 'header', 
+               ref_symbols = "1", 
+               value = footer_nri)
+  )
+
+```
+
+
+```{r create-tbl_calib}
+
+tbl_calib <- evaluations %>% 
+  mutate(.risk_horizon = paste("year", .risk_horizon, sep = '_')) %>% 
+  split(.$.risk_horizon) %>% 
+  map(
+    ~ select(.x, -predictions) %>% 
+      unnest(evaluation) %>% 
+      filter(str_detect(stat, '^calib'),
+             .lpa_defn == 'lpa_nmol',
+             .lpa_trafo == 'no_trafo') %>% 
+      mutate(tbv = table_glue("{est}\n({lwr}, {upr})", 
+                              rspec = rspec_3d), 
+             .keep = 'unused') %>% 
+      select(group_level, .risk_type, model, stat, tbv) %>% 
+      pivot_wider(names_from = model, values_from = tbv) %>% 
+      relocate(prevent, patch, enhance, .after = stat) %>% 
+      mutate(group_level = translate_categories(group_level),
+             .risk_type = str_to_upper(.risk_type),
+             stat = recode(stat, 
+                           "calib_int" = "Calibration intercept",
+                           "calib_slp" = "Calibration slope")) %>% 
+      as_grouped_data(groups = '.risk_type') %>% 
+      as_flextable(hide_grouplabel = TRUE) %>% 
+      flextable_polish() %>% 
+      flextable_autofit() %>% 
+      set_header_labels(group_level = "Group",
+                        stat = "Statistic",
+                        prevent = "Base",
+                        patch = "Patched with Lp(a)",
+                        enhance = "Enhanced with Lp(a)") %>% 
+      merge_v(part = 'header') %>% 
+      merge_v(part = 'body', j = 'group_level') 
+  )
+
+```
+
+
+\newpage
+
+# Primary objective 1: Apply the predictor patch method to incorporate molar concentration of Lp(a) into the 30-year PREVENT total CVD and ASCVD risk prediction equations.
+
+\newpage
+
+## Table 1: Participants included in 30-year risk analysis.
+
+```{r}
+
+exclusions_30yr %>% 
+  set_names(translate_categories(names(.), names = 'study')) %>% 
+  flextable() %>% 
+  set_header_labels(
+    inclusion = "Inclusion criteria",
+    .overall = "Overall"
+  ) %>% 
+  flextable_polish() %>% 
+  flextable_autofit()
+
+```
+
+\newpage
+
+## Table 2: Characteristics of participants included in 30-year risk analysis
+
+```{r}
+
+tbl_characteristics$year_27.5
+
+```
+
+\newpage
+
+## Table 3: Multi-variable adjusted linear regression estimate (95% CI) for Lp(a) in nmol/L among MESA participants
+
+```{r}
+
+tbl_lpa_lm$lpa_nmol_no_trafo_27.5
+
+```
+
+\newpage
+
+## Table 4: Multi-variable adjusted hazard ratios for 30-year total CVD and ASCVD among MESA participants.
+
+```{r}
+
+tbl_lpa_cph$year_27.5
+
+```
+
+`r page_long_above()`
+
+## Figure 1: Predicted 30-year risk with base PREVENT equations and patched PREVENT equations among ARIC participants
+
+```{r}
+
+data_gg <- evaluations %>% 
+  filter(group_variable == 'overall',
+         .risk_horizon > 10) %>% 
+  select(-evaluation) %>% 
+  unnest(predictions) %>% 
+  filter(.lpa_defn == 'lpa_nmol', .lpa_trafo == 'no_trafo') %>% 
+  select(.risk_type, prevent, patch) %>% 
+  mutate(
+    .risk_type = paste("Predicted 30-year risk of",
+                       str_to_upper(.risk_type)),
+    category = case_when(
+      prevent > 0.20 & patch < 0.20 ~ "From >20% to < 20% w/patch",
+      prevent > 0.20 & patch > 0.20 ~ ">20% in both",
+      prevent < 0.20 & patch > 0.20 ~ "From <20% to >20% w/patch",
+      prevent < 0.20 & patch < 0.20 ~ "<20% in both"
+    )
+  )
+
+ggplot(data_gg) +
+  aes(x = prevent, y = patch, color = category) + 
+  geom_point() + 
+  facet_wrap(~.risk_type) + 
+  labs(x = "PREVENT risk score, %",
+       y = "Patched PREVENT risk score, %",
+       color = "Risk category") + 
+  scale_x_continuous(labels = scales::percent) + 
+  scale_y_continuous(labels = scales::percent) +
+  theme_bw() + 
+  theme(panel.grid = element_blank(),
+        legend.position = 'top')
+
+```
+
+`r page_wide_above()`
+
+# Primary objective 2: Compare the performance of the Lp(a) patched 30-year PREVENT total CVD and ASCVD risk prediction equations versus the original PREVENT equations and the approach of including molar concentration of Lp(a) as a risk-enhancing factor, as proposed in the 2022 AHA Lp(a) Scientific Statement.
+
+\newpage
+
+## Table 5: C-statistics of the PREVENT equations for 30-year risk prediction using the base equation and two modified equations that incorporate Lp(a) among ARIC participants.
+
+```{r}
+tbl_cstats$year_27.5
+```
+
+\newpage
+
+## Table 6: Net reclassification improvement of the PREVENT equations for 30-year risk prediction using the base equation and two modified equations that incorporate Lp(a) among ARIC participants.
+
+
+```{r}
+tbl_nri$year_27.5
+```
+
+\newpage
+
+## Table 7: Calibration slope and intercept of the PREVENT equations for 30-year risk prediction using the base equation and two modified equations that incorporate Lp(a) among ARIC participants.
+
+```{r}
+tbl_calib$year_27.5
+```
+
+\newpage
+ 
+# Secondary objective 1: Apply the predictor patch method to incorporate molar concentration of Lp(a) into the 10-year PREVENT total CVD and ASCVD risk prediction equations. 
+
+\newpage
+
+## Table 8: Participants included in 10-year risk analysis.
+
+```{r}
+
+exclusions_10yr %>% 
+  set_names(translate_categories(names(.), names = 'study')) %>% 
+  flextable() %>% 
+  set_header_labels(
+    inclusion = "Inclusion criteria",
+    .overall = "Overall"
+  ) %>% 
+  flextable_polish() %>% 
+  flextable_autofit()
+
+```
+
+
+\newpage
+
+## Table 9: Characteristics of participants included in 10-year risk analysis
+
+```{r}
+
+tbl_characteristics$year_10
+
+```
+
+\newpage
+
+## Table 10: Multi-variable adjusted linear regression estimate (95% CI) for Lp(a) in nmol/L among MESA participants
+
+```{r}
+
+tbl_lpa_lm$lpa_nmol_no_trafo_10
+
+```
+
+\newpage
+
+## Table 11: Multi-variable adjusted hazard ratios for 10-year total CVD and ASCVD among MESA participants.
+
+```{r}
+
+tbl_lpa_cph$year_10
+
+```
+
+`r page_long_above()`
+
+## Figure 1: Predicted 10-year risk with base PREVENT equations and patched PREVENT equations among ARIC participants.
+
+```{r}
+
+data_gg <- evaluations %>% 
+  filter(group_variable == 'overall',
+         .risk_horizon == 10) %>% 
+  select(-evaluation) %>% 
+  unnest(predictions) %>% 
+  filter(.lpa_defn == 'lpa_nmol', .lpa_trafo == 'no_trafo') %>% 
+  select(.risk_type, prevent, patch) %>% 
+  mutate(
+    .risk_type = paste("Predicted 10-year risk of",
+                       str_to_upper(.risk_type)),
+    category = case_when(
+      prevent > 0.10 & patch < 0.10 ~ "From >10% to < 10% w/patch",
+      prevent > 0.10 & patch > 0.10 ~ ">10% in both",
+      prevent < 0.10 & patch > 0.10 ~ "From <10% to >10% w/patch",
+      prevent < 0.10 & patch < 0.10 ~ "<10% in both"
+    )
+  )
+
+ggplot(data_gg) +
+  aes(x = prevent, y = patch, color = category) + 
+  geom_point() + 
+  facet_wrap(~.risk_type) + 
+  labs(x = "PREVENT risk score, %",
+       y = "Patched PREVENT risk score, %",
+       color = "Risk category") + 
+  scale_x_continuous(labels = scales::percent) + 
+  scale_y_continuous(labels = scales::percent) +
+  theme_bw() + 
+  theme(panel.grid = element_blank(),
+        legend.position = 'top')
+
+```
+
+`r page_wide_above()`
+
+# Secondary objective 2: Compare the performance of the Lp(a) patched 10-year PREVENT total CVD and ASCVD risk prediction equations versus the original PREVENT equations and the approach of including molar concentration of Lp(a) as a risk-enhancing factor, as proposed in the 2022 AHA Lp(a) Scientific Statement.  
+
+\newpage
+
+## Table 5: C-statistics of the PREVENT equations for 10-year risk prediction using the base equation and two modified equations that incorporate Lp(a) among ARIC participants.
+
+```{r}
+tbl_cstats$year_10
+```
+
+\newpage
+
+## Table 6: Net reclassification improvement of the PREVENT equations for 10-year risk prediction using the base equation and two modified equations that incorporate Lp(a) among ARIC participants.
+
+
+```{r}
+tbl_nri$year_10
+```
+
+\newpage
+
+## Table 7: Calibration slope and intercept of the PREVENT equations for 10-year risk prediction using the base equation and two modified equations that incorporate Lp(a) among ARIC participants.
+
+```{r}
+tbl_calib$year_10
+```
+
+\newpage
+
+# Exploratory objective: Repeat the primary and secondary objectives using Lp(a) in mass concentration.
+
+
+\newpage
+
+# Appendix
+
+`r page_long_above()`
+
+## Figure A1: Cumulative distribution of numerical variables by study.
+
+```{r}
+
+data_gg <- data_train %>% 
+  bind_rows(data_test) %>% 
+  select(study, 
+         where(is.numeric),
+         -risk_horizon,
+         -contains("hba1"),
+         -matches("^time|^status")) %>% 
+  pivot_longer(cols = -study) %>% 
+  mutate(name = translate_names(name),
+         study = translate_categories(study, name = 'study'))
+
+ggplot(data_gg, aes(x = value, color = study)) + 
+  stat_ecdf(geom = 'step') + 
+  facet_wrap(~name, scales = 'free_x') + 
+  theme(legend.position = 'top')
+
+
+```
+
+\newpage
+
+## Figure A2: Box-plots of numerical variables by study.
+
+```{r}
+
+ggplot(data_gg, aes(x = study, y = value, fill = study)) + 
+  geom_boxplot() + 
+  facet_wrap(~name, scales = 'free_y')  + 
+  theme(legend.position = 'top')
+
+
+```
+
+\newpage
+
+## Figure A3: Expected CVD risk by Lp(a) using natural splines
+
+```{r}
+
+data_gg <- fig_lpa_spline %>% 
+  mutate(data_type = recode(data_type, 
+                            "test" = "Testing",
+                            "train" = "Training"),
+         risk_horizon = recode(risk_horizon,
+                               '10' = '10-year risk',
+                               '27.5' = '30-year risk'))
+
+ggplot(data_gg) +
+  aes(x = lpa_nmol, y = pred, color = data_type) +
+  geom_line() +
+  facet_wrap(~risk_horizon) +
+  labs(x = "Lp(a), nMol/L",
+       y = "CVD risk, %",
+       color = "Data") + 
+  scale_y_continuous(labels = scales::percent)
+
+```
+
+
+`r page_wide_above()`
