@@ -51,3 +51,4 @@ doc/*.md
 .Rdata
 
 data/
+.positai

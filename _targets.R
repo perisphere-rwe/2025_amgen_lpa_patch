@@ -19,27 +19,37 @@ if(!dir.exists(glue("doc/results-v{results_version_major}"))){
 
 analysis_guide <- expand_grid(
   .lpa_defn = c('lpa_nmol', 'lpa_mgdl'),
-  .lpa_trafo = c('log_trafo', 'no_trafo', 'catg_trafo'),
+  .lpa_trafo = c('log_trafo', 'no_trafo', 'catg_trafo', 'spline_trafo'),
   .risk_horizon = c(10, 27.5),
   .risk_type = c("ascvd", "cvd", "chd")
 ) %>%
-  filter(.lpa_trafo %in% c('no_trafo', 'catg_trafo'),
+  filter(.lpa_trafo %in% c('no_trafo', 'catg_trafo', 'spline_trafo'),
          .lpa_defn == 'lpa_nmol',
          .risk_type %in% c("ascvd", "cvd"))
 
 tar_plan(
 
-  # data_aric ----
-  data_aric = load_aric(),
-  # data_mesa ----
-  data_mesa = load_mesa(),
-  # data_cardia ----
-  data_cardia = read_rds('data/data_cardia.rds') %>%
+  # # data_aric ----
+  # data_aric = load_aric(),
+  # # data_mesa ----
+  # data_mesa = load_mesa(),
+  # # data_cardia ----
+  # data_cardia = read_rds('data/data_cardia.rds') %>%
+  #   mutate(overall = 'overall',
+  #          study = sample(x = c("cardia_train", "cardia_test"),
+  #                         size = n(),
+  #                         replace = TRUE)),
+
+  data_aric = tibble(),
+  data_mesa = tibble(),
+
+  data_cardia = read_rds(
+    '../perisphere-cardia_data-prep/_targets/objects/data_cardia'
+  ) %>%
     mutate(overall = 'overall',
            study = sample(x = c("cardia_train", "cardia_test"),
                           size = n(),
                           replace = TRUE)),
-
 
   subgroups = c("overall", "sex"),
 
@@ -89,7 +99,11 @@ tar_plan(
     mutate(study = factor(study, levels = c('aric',
                                             'mesa',
                                             'cardia_train',
-                                            'cardia_test'))) %>%
+                                            'cardia_test')),
+           race = factor(race, levels = c("white",
+                                          "black",
+                                          "hispanic",
+                                          "east_asian"))) %>%
     as_data_dictionary() %>%
     bind_dictionary(
       data_dictionary(
@@ -102,6 +116,7 @@ tar_plan(
     ) %>%
     data_document(),
 
+  # fig_lpa_spline ----
   tar_target(name = fig_lpa_spline, command = {
 
     data <- bind_rows(train = data_train, test = data_test,
@@ -140,7 +155,7 @@ tar_plan(
   # .risk_horizon = 27.5
   # .lpa_defn = 'lpa_nmol'
   # .risk_type = 'ascvd'
-  # .lpa_trafo = 'catg_trafo'
+  # .lpa_trafo = 'spline_trafo'
 
   .analyses <- tar_map(
 
@@ -149,7 +164,7 @@ tar_plan(
     names = c(.lpa_defn, .lpa_trafo, .risk_horizon, .risk_type),
 
     # analysis ----
-    tar_target(analysis, command = {
+    tar_target(analysis, tidy_eval = FALSE, command = {
 
       set_default_dictionary(meta)
 
@@ -237,32 +252,85 @@ tar_plan(
         paste(collapse = ', ') %>%
         paste("Surv(", ., ")", sep = '')
 
-      formula_patch <- as.formula(
-        glue("{surv_outcome} ~ .resid + {control_vars}")
-      )
+      if (.lpa_trafo == 'spline_trafo') {
 
-      fit_cox <- coxph(formula = formula_patch, data = data_train_horizon)
+        # Piecewise linear spline with knots at Lp(a) category boundaries:
+        # lpa_nmol: 100, 200 nmol/L  |  lpa_mgdl: 40, 80 mg/dL
+        knots <- if (.lpa_defn == 'lpa_nmol') c(100, 200) else c(40, 80)
+        # Scale knots to model units (translate_data divides by divby_modeling)
+        knots_model <- knots / mult_by
 
-      fit_cox_out <- tidy(fit_cox,
-                          conf.int = TRUE,
-                          exponentiate = TRUE) %>%
-        append_term_key() %>%
-        index_terms()
+        data_train_horizon <- data_train_horizon %>%
+          mutate(
+            lpa_sp1 = .data[[.lpa_defn]],
+            lpa_sp2 = pmax(0, .data[[.lpa_defn]] - knots_model[1]),
+            lpa_sp3 = pmax(0, .data[[.lpa_defn]] - knots_model[2])
+          )
 
-      beta <- as.numeric(coef(fit_cox)['.resid'])
+        formula_patch <- as.formula(
+          glue("{surv_outcome} ~ lpa_sp1 + lpa_sp2 + lpa_sp3 + {control_vars}")
+        )
 
-      data_predictions <- data_test_horizon %>%
-        # adds column called .resid, which is observed - fitted lp(a)
-        augment(newdata = ., x = fit_lm) %>%
-        as.data.table() %>%
-        setnames(old = risk_var,
-                 new = 'prevent') %>%
-        .[, let(patch = prevent * exp(beta * .resid),
-                enhance = pmin(prevent * 1.11 ^ (lpa_nmol/50), 1))] %>%
-        select(all_of(subgroups),
-               all_of(surv_outcome_vars),
-               prevent, patch, enhance) %>%
-        as_tibble()
+        fit_cox <- coxph(formula = formula_patch, data = data_train_horizon)
+
+        fit_cox_out <- tidy(fit_cox,
+                            conf.int = TRUE,
+                            exponentiate = TRUE) %>%
+          append_term_key() %>%
+          index_terms()
+
+        beta_sp <- coef(fit_cox)[c('lpa_sp1', 'lpa_sp2', 'lpa_sp3')]
+
+        # Patch = exp(f(lpa_obs) - f(lpa_exp)), where f is the spline function.
+        # .fitted from augment() gives the expected Lp(a) from the linear model.
+        data_predictions <- data_test_horizon %>%
+          augment(newdata = ., x = fit_lm) %>%
+          mutate(
+            lpa_obs  = .data[[.lpa_defn]],
+            lpa_exp  = .fitted,
+            patch_lp = beta_sp[1] * (lpa_obs - lpa_exp) +
+                       beta_sp[2] * (pmax(0, lpa_obs - knots_model[1]) - pmax(0, lpa_exp - knots_model[1])) +
+                       beta_sp[3] * (pmax(0, lpa_obs - knots_model[2]) - pmax(0, lpa_exp - knots_model[2]))
+          ) %>%
+          as.data.table() %>%
+          setnames(old = risk_var, new = 'prevent') %>%
+          .[, let(patch   = prevent * exp(patch_lp),
+                  enhance = pmin(prevent * 1.11 ^ (lpa_nmol / 50), 1))] %>%
+          select(all_of(subgroups),
+                 all_of(surv_outcome_vars),
+                 prevent, patch, enhance) %>%
+          as_tibble()
+
+      } else {
+
+        formula_patch <- as.formula(
+          glue("{surv_outcome} ~ .resid + {control_vars}")
+        )
+
+        fit_cox <- coxph(formula = formula_patch, data = data_train_horizon)
+
+        fit_cox_out <- tidy(fit_cox,
+                            conf.int = TRUE,
+                            exponentiate = TRUE) %>%
+          append_term_key() %>%
+          index_terms()
+
+        beta <- as.numeric(coef(fit_cox)['.resid'])
+
+        data_predictions <- data_test_horizon %>%
+          # adds column called .resid, which is observed - fitted lp(a)
+          augment(newdata = ., x = fit_lm) %>%
+          as.data.table() %>%
+          setnames(old = risk_var,
+                   new = 'prevent') %>%
+          .[, let(patch   = prevent * exp(beta * .resid),
+                  enhance = pmin(prevent * 1.11 ^ (lpa_nmol / 50), 1))] %>%
+          select(all_of(subgroups),
+                 all_of(surv_outcome_vars),
+                 prevent, patch, enhance) %>%
+          as_tibble()
+
+      }
 
       tibble(.risk_horizon = .risk_horizon,
              .risk_type = .risk_type,

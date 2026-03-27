@@ -46,3 +46,5 @@ library(compareC)
 # spline analyses
 library(splines)
 library(splines2)
+library(magrittr)
+library(rms)

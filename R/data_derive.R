@@ -22,7 +22,7 @@ data_derive <- function(data){
 
       lpa_mgdl_log = log(lpa_mgdl+1),
 
-      lpa_mgdl_catg = cut(lpa_nmol,
+      lpa_mgdl_catg = cut(lpa_mgdl,
                           breaks = c(0, 40, 80, Inf),
                           right = FALSE,
                           labels = c('lt_40', 'gteq_40_lt_80', 'gteq_80')),
