@@ -449,12 +449,19 @@ tbl_cstats <- evaluations %>%
       unnest(evaluation) %>% 
       filter(str_detect(stat, '^auc'),
              .lpa_defn == 'lpa_nmol',
-             .lpa_trafo == 'no_trafo') %>% 
+             .lpa_trafo %in% c('no_trafo', 'spline_trafo')) %>% 
       mutate(tbv = table_glue("{est}\n({lwr}, {upr})", 
-                              rspec = rspec_4d), 
+                              rspec = rspec_4d),
+             model = if_else(model == 'patch',
+                             paste(model, .lpa_trafo, sep = '_'),
+                             model),
              .keep = 'unused') %>% 
       select(group_level, .risk_type, model, stat, tbv) %>% 
+      # there are dups in the prevent b/c we didn't filter to
+      # a single trafo type.
+      distinct() %>% 
       pivot_wider(names_from = model, values_from = tbv) %>% 
+      relocate(enhance, .after = everything()) %>% 
       mutate(group_level = translate_categories(group_level),
              .risk_type = str_to_upper(.risk_type),
              stat = recode(stat, 
@@ -469,10 +476,11 @@ tbl_cstats <- evaluations %>%
       set_header_labels(group_level = "Group",
                         stat = "Statistic",
                         prevent = "Base",
-                        patch = "Patched with Lp(a)",
+                        patch_no_trafo = "Linear patch with Lp(a)",
+                        patch_spline_trafo = "Spline patch with Lp(a)",
                         enhance = "Enhanced with Lp(a)") %>% 
       add_header_row(values = c("Group", "Statistic", "PREVENT Equations"),
-                     colwidths = c(1, 1, 3)) %>% 
+                     colwidths = c(1, 1, 4)) %>% 
       merge_v(part = 'header') %>% 
       merge_v(part = 'body', j = 'group_level')
   )
@@ -490,12 +498,19 @@ tbl_nri <- evaluations %>%
       unnest(evaluation) %>% 
       filter(str_detect(stat, '^nri'),
              .lpa_defn == 'lpa_nmol',
-             .lpa_trafo == 'no_trafo') %>% 
+             .lpa_trafo %in% c('no_trafo', 'spline_trafo')) %>% 
       mutate(tbv = table_glue("{est}\n({lwr}, {upr})", 
                               rspec = rspec_3d), 
+             model = if_else(model == 'patch',
+                             paste(model, .lpa_trafo, sep = '_'),
+                             model),
              .keep = 'unused') %>% 
       select(group_level, .risk_type, model, stat, tbv) %>% 
+      # there are dups in prevent b/c we didn't filter to
+      # a single trafo type.
+      distinct() %>% 
       pivot_wider(names_from = model, values_from = tbv) %>% 
+      relocate(enhance, .after = everything()) %>% 
       mutate(group_level = translate_categories(group_level),
              .risk_type = str_to_upper(.risk_type),
              stat = recode(stat, 
@@ -509,7 +524,8 @@ tbl_nri <- evaluations %>%
       set_header_labels(group_level = "Group",
                         stat = "Statistic",
                         prevent = "Base",
-                        patch = "Patched with Lp(a)",
+                        patch_no_trafo = "Linear patch with Lp(a)",
+                        patch_spline_trafo = "Spline patch with Lp(a)",
                         enhance = "Enhanced with Lp(a)") %>% 
       merge_v(part = 'header') %>% 
       merge_v(part = 'body', j = 'group_level') %>% 
@@ -532,13 +548,18 @@ tbl_calib <- evaluations %>%
       unnest(evaluation) %>% 
       filter(str_detect(stat, '^calib'),
              .lpa_defn == 'lpa_nmol',
-             .lpa_trafo == 'no_trafo') %>% 
+             .lpa_trafo %in% c('no_trafo', 'spline_trafo')) %>% 
       mutate(tbv = table_glue("{est}\n({lwr}, {upr})", 
                               rspec = rspec_3d), 
+             model = if_else(model == 'patch',
+                             paste(model, .lpa_trafo, sep = '_'),
+                             model),
              .keep = 'unused') %>% 
       select(group_level, .risk_type, model, stat, tbv) %>% 
-      pivot_wider(names_from = model, values_from = tbv) %>% 
-      relocate(prevent, patch, enhance, .after = stat) %>% 
+      pivot_wider(names_from = model, values_from = tbv,
+                  # duplicates from not filtering to a single trafo
+                  values_fn = ~.x[1]) %>% 
+      relocate(prevent, starts_with("patch"), enhance, .after = stat) %>% 
       mutate(group_level = translate_categories(group_level),
              .risk_type = str_to_upper(.risk_type),
              stat = recode(stat, 
@@ -551,7 +572,8 @@ tbl_calib <- evaluations %>%
       set_header_labels(group_level = "Group",
                         stat = "Statistic",
                         prevent = "Base",
-                        patch = "Patched with Lp(a)",
+                        patch_no_trafo = "Linear patch with Lp(a)",
+                        patch_spline_trafo = "Spline patch with Lp(a)",
                         enhance = "Enhanced with Lp(a)") %>% 
       merge_v(part = 'header') %>% 
       merge_v(part = 'body', j = 'group_level') 
